@@ -1,0 +1,79 @@
+# -----------------------------------------------------------------------------
+# Python / uv
+# -----------------------------------------------------------------------------
+# Virtual environments (uv creates .venv by default)
+.venv/
+venv/
+ENV/
+env/
+
+# uv lock file is COMMITTED (do not ignore uv.lock)
+# But ignore any legacy requirements files if generated locally
+requirements-local.txt
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# -----------------------------------------------------------------------------
+# Django
+# -----------------------------------------------------------------------------
+# Environment variables (SECURITY CRITICAL)
+.env
+.env.local
+.env.*.local
+
+# SQLite databases (default local DB)
+db.sqlite3
+db.sqlite3-journal
+
+# Media files (user uploads)
+media/
+staticfiles/
+static_root/
+
+# Local settings (override production settings)
+local_settings.py
+conf/local_settings.py
+
+# -----------------------------------------------------------------------------
+# IDE & Editors
+# -----------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# -----------------------------------------------------------------------------
+# Testing & Coverage
+# -----------------------------------------------------------------------------
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+.nox/

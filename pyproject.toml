@@ -1,0 +1,80 @@
+[project]
+name = "rag-chatbot-app"
+version = "0.1.0"
+description = "Role-Based Secure RAG System"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "celery>=5.6.2",
+    "django==5.2",
+    "django-cors-headers>=4.9.0",
+    "django-environ>=0.12.1",
+    "djangorestframework>=3.16.1",
+    "djangorestframework-simplejwt>=5.5.1",
+    "docx2txt>=0.9",
+    "eventlet>=0.40.4",
+    "minio>=7.2.20",
+    "onnxruntime>=1.24.1",
+    "optimum>=2.1.0",
+    "pgvector>=0.4.2",
+    "psycopg2-binary>=2.9.11",
+    "pypdf>=6.7.0",
+    "python-json-logger>=4.0.0",
+    "redis>=7.2.0",
+    "transformers>=5.2.0",
+    "uvicorn>=0.40.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black>=26.1.0",
+    "django-extensions>=4.1",
+    "django-silk>=5.4.3",
+    "drf-spectacular>=0.29.0",
+    "flake8>=7.3.0",
+    "pytest>=9.0.2",
+    "pytest-cov>=7.0.0",
+    "pytest-django>=4.12.0",
+]
+
+
+# pyproject.toml (if using [scripts] - uv supports this)
+[project.scripts]
+lint = "flake8 ."
+format = "black ."
+check-format = "black --check ."
+
+[tool.black]
+line-length = 88
+target-version = ['py311']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  \.eggs
+  | \.git
+  | \.mypy_cache
+  | \.tox
+  | venv
+  | build
+)/
+'''
+
+[tool.flake8]
+max-line-length = 88
+extend-ignore = [
+  "E203",  # whitespace before ':'
+  "W503",  # line break before binary operator (conflicts with Black)
+]
+exclude = [
+  ".git",
+  "__pycache__",
+  "venv",
+  ".venv",
+  "build",
+  "migrations",
+  "config/settings",
+]
+max-complexity = 10
+per-file-ignores = [
+  "config/settings/*:F403,F405",
+]
