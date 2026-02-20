@@ -1,19 +1,20 @@
+# documents/storage.py
+import os
+import re  # ✅ Added for sanitization
 import logging
-import uuid
 from datetime import datetime, timedelta
+import uuid
+from minio import S3Error
 from django.conf import settings
-from minio.error import S3Error
 
 logger = logging.getLogger(__name__)
+
 
 class MinIOService:
     
     @staticmethod
     def ensure_bucket_exists():
-        """
-        Idempotent check to ensure the bucket exists.
-        Runs safely every time; does nothing if bucket already exists.
-        """
+        """Idempotent check to ensure the bucket exists."""
         try:
             if not settings.MINIO_CLIENT.bucket_exists(settings.MINIO_BUCKET):
                 settings.MINIO_CLIENT.make_bucket(settings.MINIO_BUCKET)
@@ -23,26 +24,23 @@ class MinIOService:
             raise e
 
     @staticmethod
-    def generate_object_key(title:str, security_level: str, file_extension: str) -> str:
+    def generate_object_key(title: str, security_level: str, file_extension: str) -> str:
         """
-        Generates a structured key: {level}/{YYYY}/{MM}/{DD}/{uuid}.{ext}
-        Adheres to KISS and DRY principles.
+        Generates a structured key: {level}/{YYYY}/{MM}/{DD}/{safe_title}_{uuid}.{ext}
+        
+        ✅ Fix #6: Sanitize user-controlled title to prevent path traversal & special chars
         """
         now = datetime.now()
         date_path = now.strftime("%Y/%m/%d")
         unique_id = uuid.uuid4()
         
-        # Construct the pseudo-folder path
-        # Example: HIGH/2023/10/27/a1b2c3d4.pdf
-        return f"{security_level}/{date_path}/{title}_{unique_id}.{file_extension}"
+        # ✅ Sanitize title: allow only alphanumeric, hyphens, underscores; truncate to 50 chars
+        safe_title = re.sub(r"[^\w\-]", "_", title)[:50]
+        return f"{security_level}/{date_path}/{safe_title}_{unique_id}.{file_extension}"
 
     @staticmethod
     def upload_file(file_object, object_name: str, content_type: str = None):
-        """
-        Uploads a file to MinIO.
-        Ensures bucket exists before uploading.
-        """
-        # Ensure bucket existence (Safe to call every time)
+        """Uploads a file to MinIO."""
         MinIOService.ensure_bucket_exists()
         
         try:
@@ -60,6 +58,26 @@ class MinIOService:
             raise e
 
     @staticmethod
+    def download_file(object_name: str, file_path: str) -> str:
+        """Downloads a file from MinIO to a local file path."""
+        MinIOService.ensure_bucket_exists()
+        
+        try:
+            settings.MINIO_CLIENT.fget_object(
+                settings.MINIO_BUCKET,
+                object_name,
+                file_path
+            )
+            logger.info(
+                f"File downloaded from MinIO: {object_name} → {file_path}",
+                extra={"object_name": object_name, "local_path": file_path}
+            )
+            return file_path
+        except S3Error as e:
+            logger.error(f"MinIO download failed: {e}", extra={"object_name": object_name})
+            raise e
+
+    @staticmethod
     def delete_file(object_name: str):
         """Deletes a file from MinIO."""
         try:
@@ -70,9 +88,7 @@ class MinIOService:
 
     @staticmethod
     def get_presigned_url(object_name: str, expires_seconds: int = 300) -> str:
-        """
-        Generates a time-limited presigned URL for downloading.
-        """
+        """Generates a time-limited presigned URL for downloading."""
         try:
             url = settings.MINIO_CLIENT.presigned_get_object(
                 settings.MINIO_BUCKET,

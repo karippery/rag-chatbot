@@ -21,13 +21,11 @@ class DocumentUploadView(generics.CreateAPIView):
     Upload a document to MinIO.
     """
     parser_classes = [MultiPartParser, FormParser]
-    permission_classes = [AllowAny]  # Allow anyone to upload, but you can change this to IsAuthenticated if needed
-    # permission_classes = [permissions.IsAuthenticated, CanUploadPermission]
+    permission_classes = [AllowAny]
     serializer_class = DocumentUploadSerializer
 
-    # Move the extend_schema here, on the post/create method
     @extend_schema(
-        request=DocumentUploadSerializer,  # Simpler way
+        request=DocumentUploadSerializer,
         responses={201: DocumentUploadSerializer},
         tags=["Documents"],
     )
@@ -74,7 +72,6 @@ class DocumentUploadView(generics.CreateAPIView):
                 original_name=file_name,
                 uploaded_by=self.request.user if self.request.user.is_authenticated else None,
                 status=Document.Status.PENDING,
-                # security_level comes from validated_data automatically
             )
 
             logger.info(
@@ -105,7 +102,6 @@ class DocumentUploadView(generics.CreateAPIView):
                         exc_info=True
                     )
             
-            # Log full traceback for debugging, then re-raise for DRF to handle
             logger.error(
                 f"Document upload failed: {str(e)}",
                 exc_info=True,
@@ -114,37 +110,26 @@ class DocumentUploadView(generics.CreateAPIView):
                     "user_id": getattr(self.request.user, 'id', None),
                 }
             )
-            raise
+            raise  # Re-raise for DRF to handle and return error response
         
     def create(self, request, *args, **kwargs):
+        """
+        Simplified create method - delegates to perform_create for business logic.
+        """
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        
-        # Save document first
         self.perform_create(serializer)
-        
-        # Trigger Celery task for async indexing
-        if hasattr(self, 'document_id'):
-            # Send task to Celery
-            task = index_document_task.delay(self.document_id)
-            
-            # Optional: Store task ID in cache or return it
-            logger.info(f"Started Celery task {task.id} for document {self.document_id}")
-            
-            status_message = "Document uploaded successfully. Indexing in progress."
-        else:
-            status_message = "Document uploaded but indexing could not be started."
-        
         headers = self.get_success_headers(serializer.data)
+        
         return Response(
             {
-                "message": status_message,
+                "message": "Document uploaded successfully. Indexing in progress.",
                 "data": serializer.data,
-                "document_id": self.document_id if hasattr(self, 'document_id') else None,
             },
             status=status.HTTP_201_CREATED,
             headers=headers,
         )
+
 
 class DocumentDetailView(generics.RetrieveDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated, CanDeletePermission]
