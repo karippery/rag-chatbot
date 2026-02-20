@@ -46,6 +46,7 @@ urlpatterns = [
 urlpatterns += [
     path("api/users/", include("users.urls")),
     path("api/documents/", include("documents.urls")),
+    path("api/rag/", include("rag.urls")),
 ]
 
 

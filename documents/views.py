@@ -4,7 +4,6 @@ from rest_framework.response import Response
 from django.db import transaction
 import logging
 
-from .permissions import CanDeletePermission, CanUploadPermission
 from .serializers import DocumentSerializer, DocumentUploadSerializer
 from .models import Document
 from .services.storage import MinIOService
@@ -132,46 +131,34 @@ class DocumentUploadView(generics.CreateAPIView):
 
 
 class DocumentDetailView(generics.RetrieveDestroyAPIView):
-    permission_classes = [permissions.IsAuthenticated, CanDeletePermission]
+    permission_classes = [AllowAny]
     serializer_class = DocumentSerializer
 
     def get_queryset(self):
         user = self.request.user
-
-        if user.role in ["CEO", "VICE_PRESIDENT"]:
-            return Document.objects.all()
-
-        return Document.objects.filter(uploaded_by=user)
+        return Document.objects.all()
 
     def perform_destroy(self, instance):
         user = self.request.user
-
-        if instance.uploaded_by != user and user.role not in ["CEO", "VICE_PRESIDENT"]:
-            raise permissions.PermissionDenied(
-                "You do not have permission to delete this document."
-            )
 
         instance.delete()
         logger.info(f"Document deleted successfully: {instance.minio_key}")
 
 
 class DocumentListView(generics.ListAPIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [AllowAny]
     serializer_class = DocumentSerializer
 
     def get_queryset(self):
-        return Document.objects.filter(uploaded_by=self.request.user)
+        return Document.objects.all().order_by("-created_at")
 
-class DocumentDownloadView(generics.GenericAPIView):
-    permission_classes = [permissions.IsAuthenticated]
+class DocumentDownloadView(generics.RetrieveAPIView):
+    permission_classes = [AllowAny]
     serializer_class = DocumentSerializer
+    lookup_field = "id"
 
     def get_queryset(self):
-        user = self.request.user
-        queryset = Document.objects.filter(uploaded_by=user)
-
-        if user.role not in ["CEO", "VICE_PRESIDENT"]:
-            queryset = queryset.filter(uploaded_by=user)
+        queryset = Document.objects.all()
             
         return queryset
 

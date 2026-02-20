@@ -50,6 +50,7 @@ INSTALLED_APPS = [
     # Local apps
     "users",
     "documents",
+    "rag.apps.RagConfig",  # Ensure ready() is called for LLM preloading
 ]
 
 MIDDLEWARE = [
