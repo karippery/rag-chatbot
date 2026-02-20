@@ -9,7 +9,7 @@ services:
     env_file:
       - .env
     volumes:
-      - .:/app #This is OK for dev, but never do this in production:
+      - .:/app
       - static_volume:/app/staticfiles
       - media_volume:/app/media
     command: python manage.py runserver 0.0.0.0:8000
@@ -17,7 +17,6 @@ services:
     depends_on:
       db:
         condition: service_healthy
-
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health/"]
       interval: 30s
@@ -69,8 +68,8 @@ services:
     container_name: rag_minio
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin123
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     volumes:
       - minio_data:/data
     ports:
@@ -79,7 +78,7 @@ services:
     networks:
       - app-network
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9000/minio/health/live"]
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -88,9 +87,12 @@ services:
     container_name: rag_celery_worker
     build:
       context: .
-    command: celery -A your_project_name worker --loglevel=info
+      dockerfile: Dockerfile.dev
+    command: celery -A config worker --loglevel=info --pool=solo
     volumes:
       - .:/app
+      - static_volume:/app/staticfiles
+      - media_volume:/app/media
     env_file:
       - .env
     depends_on:
@@ -100,7 +102,7 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
-    restart: always
+    restart: on-failure 
     networks:
       - app-network
 
@@ -110,7 +112,6 @@ volumes:
   media_volume:
   minio_data:
   redis_data:
-
 
 networks:
   app-network:

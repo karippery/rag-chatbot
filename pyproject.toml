@@ -14,14 +14,13 @@ dependencies = [
     "docx2txt>=0.9",
     "eventlet>=0.40.4",
     "minio>=7.2.20",
-    "onnxruntime>=1.24.1",
-    "optimum>=2.1.0",
+    "optimum[onnxruntime]>=2.1.0",
     "pgvector>=0.4.2",
     "psycopg2-binary>=2.9.11",
     "pypdf>=6.7.0",
     "python-json-logger>=4.0.0",
     "redis>=7.2.0",
-    "transformers>=5.2.0",
+    "transformers>=4.36.0,<4.58.0",
     "uvicorn>=0.40.0",
 ]
 

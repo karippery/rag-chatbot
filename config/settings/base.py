@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 
 from datetime import timedelta
 from pathlib import Path
+from celery.exceptions import ImproperlyConfigured
 import environ
 import os
 from minio import Minio
@@ -243,6 +244,14 @@ CELERY_ACCEPT_CONTENT = ['application/json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
+
+
+# Document processing settings 
+CHUNK_SIZE = 500  # Characters per chunk
+CHUNK_OVERLAP = 50  # Overlap between chunks
+
+if CHUNK_OVERLAP >= CHUNK_SIZE:
+    raise ImproperlyConfigured("CHUNK_OVERLAP must be less than CHUNK_SIZE")
 
 LOGGING = {
     "version": 1,

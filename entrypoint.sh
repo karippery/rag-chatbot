@@ -31,13 +31,11 @@ if [ "$DJANGO_COLLECTSTATIC" = "1" ]; then
   python manage.py collectstatic --noinput --clear
 fi
 
+
 # Create superuser (optional)
-if [ "$DJANGO_SUPERUSER_USERNAME" ]; then
+if [ -n "$DJANGO_SUPERUSER_USERNAME" ]; then
   echo "Creating superuser if not exists..."
-  python manage.py createsuperuser \
-    --noinput \
-    --username "$DJANGO_SUPERUSER_USERNAME" \
-    --email "$DJANGO_SUPERUSER_EMAIL" || true
+  python manage.py createsuperuser --noinput || true
 fi
 
 echo "Starting development server..."

@@ -15,8 +15,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_PROJECT_ENVIRONMENT=/opt/venv \
     UV_HTTP_TIMEOUT=600 \
     UV_NO_PROGRESS=1 \
-    HF_HOME=/tmp/hf_cache \
-    TRANSFORMERS_CACHE=/tmp/hf_cache
+    HF_HOME=/tmp/hf_cache
 
 # Install build-time system dependencies (required for compiling wheels)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -50,8 +49,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH="/opt/venv/bin:$PATH" \
     DJANGO_SETTINGS_MODULE=config.settings.development \
     HF_HOME=/app/.cache/huggingface \
-    TRANSFORMERS_CACHE=/app/.cache/huggingface \
-    SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence_transformers
+    TRANSFORMERS_CACHE=/app/.cache/huggingface
 
 # Install ONLY runtime system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -62,10 +60,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && mkdir -p /app/.cache \
     && useradd -m -u 1000 appuser \
     && chown -R appuser:appuser /app
-
-RUN /opt/venv/bin/pip install --no-cache-dir \
-    torch --index-url https://download.pytorch.org/whl/cpu \
-    sentence-transformers --no-deps
 
 
 # Copy the pre-built virtual environment from builder

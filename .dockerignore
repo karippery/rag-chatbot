@@ -1,0 +1,40 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Cache & model files (these are huge)
+.cache/
+*.cache
+*.onnx
+
+# Test & dev artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# Docker
+.dockerignore
+Dockerfile*
+docker-compose*.yml
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
