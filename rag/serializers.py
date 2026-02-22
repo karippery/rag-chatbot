@@ -1,5 +1,4 @@
 from rest_framework import serializers
-from documents.models import Document
 from rag.models import QueryHistory
 
 
