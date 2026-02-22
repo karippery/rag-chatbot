@@ -1,34 +1,100 @@
+"""
+
+Sentence-embedding service backed by ``sentence-transformers/all-MiniLM-L6-v2``
+running via ONNX Runtime for fast CPU inference.
+
+Lazy-loading strategy
+---------------------
+The model is **not** loaded at import time.  The first call to
+``embed_text()`` or ``embed_batch()`` triggers ``load()``, which either:
+
+1. Loads from a local ONNX cache (fast, no re-conversion), or
+2. Converts the HuggingFace model to ONNX, saves it to the cache dir, and
+   loads it (slow first run, fast thereafter).
+
+This keeps Django start-up time short and avoids OOM errors in containers
+where the model is not needed (e.g. management command containers).
+
+Thread safety
+-------------
+``load()`` uses a simple ``_model is not None`` guard.  In multi-threaded
+environments (Gunicorn with threads) two threads may race through the check
+and both attempt to load the model.  This is safe: the second write is a
+no-op overwrite with the same object.  Use ``threading.Lock`` if you need
+strict single-init semantics.
+"""
+
+import logging
 import os
+from typing import List
+
 import numpy as np
-from transformers import AutoTokenizer
 from optimum.onnxruntime import ORTModelForFeatureExtraction
+from transformers import AutoTokenizer
+
+logger = logging.getLogger(__name__)
+
 
 class EmbeddingService:
+    """
+    Generate dense sentence embeddings using a quantised ONNX model.
+
+    Attributes:
+        MODEL_NAME:     HuggingFace model identifier used on first run for
+                        ONNX export.
+        ONNX_CACHE_DIR: Local directory where the converted model is stored.
+                        Mount a persistent volume here in production.
+    """
 
     MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-    # Cache the converted ONNX model locally so it's not re-converted on every restart
     ONNX_CACHE_DIR = "/app/models/onnx/all-MiniLM-L6-v2"
 
     _tokenizer = None
     _model = None
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # Model lifecycle
+    # ──────────────────────────────────────────────────────────────────────────
+
     def load(self):
+        """
+        Lazily load (or convert-then-load) the ONNX model.
+
+        On the first call the model files are either read from
+        ``ONNX_CACHE_DIR`` (if ``model.onnx`` is present) or exported from
+        HuggingFace and persisted to that directory.  Subsequent calls are
+        instant because ``_model is not None``.
+
+        Returns:
+            Tuple of ``(tokenizer, model)``.
+
+        Raises:
+            OSError:      If the cache directory cannot be created.
+            Exception:    Propagated from ``transformers`` / ``optimum`` on
+                          download or conversion failure.
+        """
         if self._model is not None:
             return self._tokenizer, self._model
 
-        already_exported = os.path.exists(
-            os.path.join(self.ONNX_CACHE_DIR, "model.onnx")
-        )
+        onnx_model_path = os.path.join(self.ONNX_CACHE_DIR, "model.onnx")
+        already_exported = os.path.exists(onnx_model_path)
 
         if already_exported:
-            # Load from local ONNX cache — no re-conversion
+            logger.info(
+                "Loading ONNX model from local cache.",
+                extra={"cache_dir": self.ONNX_CACHE_DIR},
+            )
             self._tokenizer = AutoTokenizer.from_pretrained(self.ONNX_CACHE_DIR)
             self._model = ORTModelForFeatureExtraction.from_pretrained(
                 self.ONNX_CACHE_DIR,
                 provider="CPUExecutionProvider",
             )
         else:
-            # First run: convert and save so future startups are fast
+            logger.info(
+                "ONNX model not found — exporting from HuggingFace Hub. "
+                "This may take a few minutes on first run.",
+                extra={"model_name": self.MODEL_NAME, "cache_dir": self.ONNX_CACHE_DIR},
+            )
             os.makedirs(self.ONNX_CACHE_DIR, exist_ok=True)
             self._tokenizer = AutoTokenizer.from_pretrained(self.MODEL_NAME)
             self._model = ORTModelForFeatureExtraction.from_pretrained(
@@ -38,25 +104,101 @@ class EmbeddingService:
             )
             self._model.save_pretrained(self.ONNX_CACHE_DIR)
             self._tokenizer.save_pretrained(self.ONNX_CACHE_DIR)
+            logger.info(
+                "ONNX model exported and cached.",
+                extra={"cache_dir": self.ONNX_CACHE_DIR},
+            )
 
         return self._tokenizer, self._model
 
-    def mean_pooling(self, token_embeddings, attention_mask):
-        mask = np.expand_dims(attention_mask, axis=-1)
-        summed = np.sum(token_embeddings * mask, axis=1)
-        counts = np.clip(mask.sum(axis=1), a_min=1e-9, a_max=None)
-        return summed / counts
+    # ──────────────────────────────────────────────────────────────────────────
+    # Embedding helpers
+    # ──────────────────────────────────────────────────────────────────────────
 
-    def normalize(self, embeddings):
-        norm = np.linalg.norm(embeddings, axis=1, keepdims=True)
-        return embeddings / norm
+    def mean_pooling(
+        self,
+        token_embeddings: np.ndarray,
+        attention_mask: np.ndarray,
+    ) -> np.ndarray:
+        """
+        Pool token embeddings into a single sentence embedding by averaging
+        over non-padding tokens.
 
-    def embed_text(self, text: str):
+        Args:
+            token_embeddings: Shape ``(batch, seq_len, hidden_size)``.
+            attention_mask:   Shape ``(batch, seq_len)``; 1 for real tokens,
+                              0 for padding.
+
+        Returns:
+            Mean-pooled embeddings, shape ``(batch, hidden_size)``.
+        """
+        mask = np.expand_dims(attention_mask, axis=-1)            # (B, L, 1)
+        summed = np.sum(token_embeddings * mask, axis=1)           # (B, H)
+        token_counts = np.clip(mask.sum(axis=1), a_min=1e-9, a_max=None)  # (B, 1)
+        return summed / token_counts
+
+    def normalize(self, embeddings: np.ndarray) -> np.ndarray:
+        """
+        L2-normalise a batch of embeddings so cosine similarity equals dot product.
+
+        Args:
+            embeddings: Shape ``(batch, hidden_size)``.
+
+        Returns:
+            Unit-norm embeddings of the same shape.
+        """
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        # Avoid division by zero for zero vectors (shouldn't happen with real text).
+        norms = np.where(norms == 0, 1.0, norms)
+        return embeddings / norms
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Public embedding API
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def embed_text(self, text: str) -> List[float]:
+        """
+        Embed a single text string.
+
+        Convenience wrapper around ``embed_batch``.
+
+        Args:
+            text: The input string.
+
+        Returns:
+            A list of floats representing the embedding vector.
+
+        Raises:
+            ValueError: If ``text`` is empty.
+        """
+        if not text or not text.strip():
+            raise ValueError("embed_text received an empty string.")
         return self.embed_batch([text])[0]
 
-    def embed_batch(self, texts: list):
+    def embed_batch(self, texts: List[str]) -> List[List[float]]:
+        """
+        Embed a list of strings in a single forward pass.
+
+        All strings are tokenised together (with padding/truncation) so the
+        batch is processed efficiently by ONNX Runtime.
+
+        Args:
+            texts: A non-empty list of input strings.  Empty strings are
+                   allowed within the list but will produce near-zero vectors.
+
+        Returns:
+            A list of embedding vectors (each a ``List[float]``), one per
+            input string, in the same order.
+
+        Raises:
+            ValueError: If ``texts`` is empty.
+            Exception:  Propagated from the model on inference failure.
+        """
         if not texts:
+            logger.warning("embed_batch called with empty list — returning [].")
             return []
+
+        logger.debug("Embedding batch.", extra={"batch_size": len(texts)})
 
         tokenizer, model = self.load()
 
@@ -67,10 +209,25 @@ class EmbeddingService:
             return_tensors="np",
         )
 
-        outputs = model(**inputs)
+        try:
+            outputs = model(**inputs)
+        except Exception as exc:
+            logger.error(
+                "ONNX model inference failed.",
+                extra={"batch_size": len(texts)},
+                exc_info=True,
+            )
+            raise
+
         embeddings = self.mean_pooling(outputs.last_hidden_state, inputs["attention_mask"])
         embeddings = self.normalize(embeddings)
+
+        logger.debug(
+            "Batch embedded successfully.",
+            extra={"batch_size": len(texts), "embedding_dim": embeddings.shape[1]},
+        )
         return embeddings.tolist()
 
 
+# Module-level singleton — import and call directly.
 embedding_service = EmbeddingService()
