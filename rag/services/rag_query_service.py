@@ -2,22 +2,15 @@ import logging
 import time
 from typing import List, Optional, Tuple, Dict
 
-from documents.models import Document, DocumentChunk
+from documents.models import DocumentChunk
 from documents.services.embedding import embedding_service
 from rag.models import QueryHistory
+from rag.services.access_control import get_user_allowed_security_levels
 from rag.services.llm_service import llm_service
-
 
 logger = logging.getLogger(__name__)
 
-SECURITY_LEVEL_ACCESS = {
-    Document.SecurityLevel.LOW:  [Document.SecurityLevel.LOW],
-    Document.SecurityLevel.MID:  [Document.SecurityLevel.LOW, Document.SecurityLevel.MID],
-    Document.SecurityLevel.HIGH: [Document.SecurityLevel.LOW, Document.SecurityLevel.MID, Document.SecurityLevel.HIGH],
-}
-
 TOP_K = 5
-
 
 class RAGQueryService:
     def __init__(self, max_context_length: int = 2000):
@@ -27,17 +20,18 @@ class RAGQueryService:
         self,
         query_text: str,
         user=None,
-        security_level: Optional[str] = None,
-        model_name: Optional[str] = None,  # passed from view based on mode
+        model_name: Optional[str] = None,
     ) -> Dict:
         start_time = time.time()
+
+        allowed_levels, effective_max_level = get_user_allowed_security_levels(user)
 
         try:
             query_embedding = embedding_service.embed_text(query_text)
 
             chunks, chunk_ids = self._retrieve_chunks(
                 query_embedding=query_embedding,
-                security_level=security_level or Document.SecurityLevel.LOW,
+                allowed_levels=allowed_levels,
             )
 
             if not chunks:
@@ -45,7 +39,7 @@ class RAGQueryService:
                     user=user,
                     query_text=query_text,
                     query_embedding=query_embedding,
-                    security_level=security_level,
+                    effective_max_level=effective_max_level,
                     start_time=start_time,
                 )
 
@@ -71,14 +65,14 @@ class RAGQueryService:
                 response_source=response_source,
                 latency_ms=latency_ms,
                 token_count=token_count,
-                security_level=security_level or QueryHistory.SecurityLevel.LOW,
+                security_level=effective_max_level,
                 is_flagged=False,
                 flag_reason="",
             )
 
             logger.info(
-                "RAG query completed in %dms | source=%s | model=%s | chunks=%d",
-                latency_ms, response_source, model_name, len(chunks),
+                "RAG query completed in %dms | source=%s | model=%s | chunks=%d | max_level=%s",
+                latency_ms, response_source, model_name, len(chunks), effective_max_level,
                 extra={"query_id": query_history.id, "user_id": user.id if user else None},
             )
 
@@ -113,7 +107,7 @@ class RAGQueryService:
                     response=f"Error: {e}",
                     response_source="ERROR",
                     latency_ms=latency_ms,
-                    security_level=security_level or QueryHistory.SecurityLevel.LOW,
+                    security_level=effective_max_level,
                     is_flagged=True,
                     flag_reason=str(e),
                 )
@@ -132,13 +126,9 @@ class RAGQueryService:
     def _retrieve_chunks(
         self,
         query_embedding: List[float],
-        security_level: str,
+        allowed_levels: List[str],
     ) -> Tuple[List[DocumentChunk], List[int]]:
         from pgvector.django import CosineDistance
-
-        allowed_levels = SECURITY_LEVEL_ACCESS.get(
-            security_level, [Document.SecurityLevel.LOW]
-        )
 
         qs = (
             DocumentChunk.objects
@@ -168,7 +158,7 @@ class RAGQueryService:
         user,
         query_text: str,
         query_embedding: List[float],
-        security_level: Optional[str],
+        effective_max_level: str,
         start_time: float,
     ) -> Dict:
         latency_ms = int((time.time() - start_time) * 1000)
@@ -186,7 +176,7 @@ class RAGQueryService:
                 response_source="NO_RESULTS",
                 latency_ms=latency_ms,
                 token_count=len(message.split()),
-                security_level=security_level or QueryHistory.SecurityLevel.LOW,
+                security_level=effective_max_level,
                 is_flagged=False,
                 flag_reason="",
             )
