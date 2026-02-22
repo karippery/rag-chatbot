@@ -12,10 +12,31 @@ INSTALLED_APPS += [
 ]
 
 # Development middleware
-MIDDLEWARE = [
-    "silk.middleware.SilkyMiddleware",
-] + MIDDLEWARE
+MIDDLEWARE += ["silk.middleware.SilkyMiddleware"]
 
+CORS_ALLOWED_ORIGINS += [
+    "http://localhost:5173",   # Vite dev server
+    "http://127.0.0.1:5173",   # alternate Vite address
+]
+
+CORS_ALLOW_CREDENTIALS = True  # required for cookies / Authorization header
+
+# Explicitly allow the headers your React app sends
+CORS_ALLOW_HEADERS += [
+    "accept",
+    "authorization",
+    "content-type",
+    "x-csrftoken",
+]
+
+CORS_ALLOW_METHODS = [
+    "DELETE",
+    "GET",
+    "OPTIONS",
+    "PATCH",
+    "POST",
+    "PUT",
+]
 
 # Swagger/OpenAPI settings for development
 SPECTACULAR_SETTINGS = {

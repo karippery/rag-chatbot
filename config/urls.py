@@ -29,25 +29,24 @@ def health_check(request):
     return JsonResponse({"status": "ok"})
 
 urlpatterns = [
+
+    # ── Admin ─────────────────────────────────────────────────────
     path("admin/", admin.site.urls),
-    path("health/", health_check),
-    # OpenAPI schema
-    path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
-    # Swagger UI
-    path(
-        "api/swagger/",
-        SpectacularSwaggerView.as_view(url_name="schema"),
-        name="swagger-ui",
-    ),
-    # ReDoc
-    path("api/redoc/", SpectacularRedocView.as_view(url_name="schema"), name="redoc"),
+
+    # ── Health check ──────────────────────────────────────────────
+    path("health/", health_check, name="health"),
+
+    # ── OpenAPI / Swagger / ReDoc ─────────────────────────────────
+    path("api/schema/",   SpectacularAPIView.as_view(),                        name="schema"),
+    path("api/swagger/",  SpectacularSwaggerView.as_view(url_name="schema"),   name="swagger-ui"),
+    path("api/redoc/",    SpectacularRedocView.as_view(url_name="schema"),     name="redoc"),
+
+    # ── REST API ──────────────────────────────────────────────────
+    path("api/users/",     include("users.urls")),
+    path("api/documents/", include("documents.urls")),
+    path("api/rag/",       include("rag.urls")),
 ]
 
-urlpatterns += [
-    path("api/users/", include("users.urls")),
-    path("api/documents/", include("documents.urls")),
-    path("api/rag/", include("rag.urls")),
-]
 
 
 
