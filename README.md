@@ -224,3 +224,63 @@ docker compose logs -f api celery-worker
                 reverse_sql="DROP EXTENSION IF EXISTS vector;",
             ),
 ```
+
+# 🔐 High-Secure Role-Based RAG System — Summary
+
+## 🔄 How It Works
+
+### Indexing Pipeline (Async via Celery)
+```
+MinIO Download → Text Extraction → Chunking → Embedding (ONNX) → pgvector Persist
+```
+1. **Download**: Fetch encrypted file from MinIO to temp storage
+2. **Process**: Extract text, split into overlapping chunks with metadata
+3. **Embed**: Generate vectors using `all-MiniLM-L6-v2` via ONNX Runtime *(outside DB transaction)*
+4. **Persist**: Atomically store chunks with `security_level` tag in pgvector + update document status
+
+### Query Pipeline (Real-time)
+```
+Resolve User Access → Embed Query → Filtered Vector Search → Context Build → LLM Generate → Audit Log
+```
+1. **Access Resolution**: Determine user's allowed security levels (`LOW` → `VERY HIGH`)
+2. **Embed**: Convert query to vector using same ONNX model
+3. **Retrieve**: pgvector cosine search **filtered by `security_level__in=[allowed]`** + similarity threshold (≥0.35)
+4. **Context**: Concatenate top-K authorized chunks (budget-limited)
+5. **Generate**: Qwen2.5-1.5B/0.5B-Instruct produces answer *(with extractive fallback)*
+6. **Audit**: Log query, response, latency, and source chunks to `QueryHistory`
+
+---
+
+## 🛡️ Key Differentiators vs. Typical RAG Systems
+
+| Feature | Typical RAG | **This System** |
+|---------|------------|-----------------|
+| **Access Control** | Filter results *after* retrieval (post-hoc) | ✅ **Enforced at database query level** — unauthorized chunks never leave pgvector |
+| **Data Exposure Risk** | Vulnerable to side-channel leaks, prompt injection via metadata | ✅ **Zero exposure** — unauthorized content is invisible to retrieval logic |
+| **Deployment** | Often cloud-dependent | ✅ **Fully offline/air-gapped** — MinIO, pgvector, ONNX models all local |
+| **Embedding Inference** | Python/PyTorch (GPU-heavy) | ✅ **ONNX Runtime CPU-optimized** — lazy-load, quantized, low memory |
+| **Auditability** | Optional logging | ✅ **Mandatory audit trail** — every query (success/fail) logged with security context |
+| **Error Resilience** | Silent failures or generic errors | ✅ **Structured error contract** — status tracking, retry logic, temp-file cleanup |
+
+
+
+# 🖥️ System Requirements for High-Secure Offline RAG System
+
+Based on your architecture (Django 5.2, pgvector, ONNX Runtime, Qwen LLMs, MinIO), here are the **minimum** and **recommended** requirements for production deployment in an air-gapped environment.
+
+---
+
+## 📦 Hardware Requirements
+
+Based on your architecture (Django 5.2, pgvector, ONNX Runtime, Qwen LLMs, MinIO), here are the minimum and recommended requirements for production deployment in an air-gapped environment.
+
+### 🔹 Recommended (Production: ≤1,000 users, ≤100K documents)
+
+| Component | Specification | Notes |
+|-----------|--------------|-------|
+| **CPU** | 8-core x86_64 (AVX-512 preferred) | Parallel chunk embedding + concurrent LLM inference |
+| **RAM** | 32–64 GB | pgvector benefits from `shared_buffers=25% RAM` [[23]]; model caching; Celery worker concurrency |
+| **Storage** | 500 GB–2 TB NVMe SSD | Fast random I/O for vector similarity search; separate volumes for MinIO, PostgreSQL, logs |
+| **GPU** *(Optional)* | NVIDIA RTX 3060 12GB or better | Reduces Qwen2.5-1.5B inference latency from ~2s → ~200ms/token; *not required for CPU-only deployment* [[12]] |
+| **Backup** | Dedicated backup storage | Point-in-time recovery for PostgreSQL + MinIO versioning |
+

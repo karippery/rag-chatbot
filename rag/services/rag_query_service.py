@@ -271,7 +271,7 @@ class RAGQueryService:
         self,
         query_embedding: List[float],
         allowed_levels: List[str],
-        similarity_threshold: float = 0.35,  # Tune this value for your data
+        similarity_threshold: float = 0.25,  # Tune this value for your data
     ) -> Tuple[List[DocumentChunk], List[int]]:
         """
         Query pgvector for the top-K most similar active chunks above a

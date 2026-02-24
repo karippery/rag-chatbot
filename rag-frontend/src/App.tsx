@@ -11,6 +11,7 @@ import ProtectedRoute from './components/ProtectedRoute';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
 import { ForgotPassword, ResetPassword } from './pages/ForgotPassword';
+import Dashboard from './pages/Dashboard';
 
 // Import your main RAG UI page here
 // import Dashboard from './pages/Dashboard';
@@ -26,12 +27,9 @@ export default function App() {
           <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/reset-password/:uid/:token" element={<ResetPassword />} />
 
-          {/* Protected routes */}
+          {/* Protected */}
           <Route path="/" element={
-            <ProtectedRoute>
-              {/* <Dashboard /> */}
-              <div>RAG UI goes here</div>
-            </ProtectedRoute>
+            <ProtectedRoute><Dashboard /></ProtectedRoute>
           } />
 
           {/* Fallback */}
