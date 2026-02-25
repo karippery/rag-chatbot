@@ -4,13 +4,27 @@ from django.db import models
 from documents.models import Document
 from users.models import User
 
+class Chat(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="rag_chats")
+    title = models.CharField(max_length=255, blank=True)
+    is_deleted = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        ordering = ["-updated_at"]
+
+    def __str__(self):
+        return self.title or f"Chat {self.id}"
+    
 class QueryHistory(models.Model):
     """
     Audit log for every RAG query.
     Used for quality monitoring, analytics, and compliance.
     """
     user = models.ForeignKey(User,  on_delete=models.SET_NULL, null=True, related_name="rag_queries")
+    chat = models.ForeignKey(Chat, on_delete=models.CASCADE, related_name="messages", null=True)
+    
     query = models.TextField()
     query_embedding = models.JSONField(
         null=True, 

@@ -171,7 +171,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # JWT Settings — 15 min access, 7 day refresh with rotation
 SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=305),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
     "ROTATE_REFRESH_TOKENS": True,
     "BLACKLIST_AFTER_ROTATION": True,
@@ -264,6 +264,39 @@ CHUNK_OVERLAP = 50  # Overlap between chunks
 
 if CHUNK_OVERLAP >= CHUNK_SIZE:
     raise ImproperlyConfigured("CHUNK_OVERLAP must be less than CHUNK_SIZE")
+
+# RAG settings
+RESPONSE_MODE_MODELS = {
+    "quick":    "Qwen/Qwen2-0.5B-Instruct",
+    "detailed": "Qwen/Qwen2.5-1.5B-Instruct",
+}
+
+
+LLM_DEFAULT_MODEL = "Qwen/Qwen2-0.5B-Instruct"
+
+SIMILARITY_THRESHOLD = 0.45  # Tune this value for your data
+TOP_K = 3 # Number of top similar chunks to retrieve
+RAG_MAX_CONTEXT_LENGTH = 3000  # Max tokens for retrieved context (tune based on your LLM's limits)
+
+# Tuning parameters for the text-generation pipeline
+LLM_INFERENCE_PARAMS = {
+    "max_new_tokens": 512,
+    "temperature": 0.3,
+    "top_p": 0.90,
+    "do_sample": True,
+    "repetition_penalty": 1.1,
+}
+
+# --- Embedding Service Tuning ---
+# HuggingFace model identifier
+EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+
+# Absolute path for ONNX cache. 
+# Using a subfolder of BASE_DIR or a dedicated volume path
+EMBEDDING_ONNX_CACHE_DIR = "/app/models/onnx/all-MiniLM-L6-v2"
+
+# Execution provider (CPUExecutionProvider, CUDAExecutionProvider, etc.)
+EMBEDDING_ONNX_PROVIDER = "CPUExecutionProvider"
 
 LOGGING = {
     "version": 1,

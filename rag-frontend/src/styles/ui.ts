@@ -119,7 +119,8 @@ export const ui = {
   // Ghost — text only, for logout / cancel
   btnGhost: `text-sm text-[${C.text3}] hover:text-red-500 transition-colors flex items-center gap-1.5`,
 
-  spinner: 'w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin',
+  spinner:      'w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin',
+  spinnerTeal:  'w-6 h-6 border-2 border-[#C8E6E6] border-t-[#0DABAB] rounded-full animate-spin',
 
   // ── Badges ────────────────────────────────────────────────────────────
   // Base — combine with colour variant below
@@ -194,7 +195,8 @@ export const ui = {
   brandIconSm: `w-8 h-8 rounded-lg bg-[${C.accent}] flex items-center justify-center text-white`,
 
   // ── Section label (sidebar headings) ─────────────────────────────────
-  sectionLabel: `px-4 pt-5 pb-2 text-xs font-mono font-bold text-[${C.accent}] tracking-[0.12em] uppercase`,
+  sectionLabel:    `px-4 pt-5 pb-2 text-xs font-mono font-bold text-[${C.accent}] tracking-[0.12em] uppercase`,
+  sectionLabelSm:  `text-xs font-mono font-bold text-[${C.accent}] tracking-[0.12em] uppercase`,  // inline, no padding
 
   // ── Form field wrapper ────────────────────────────────────────────────
   fieldWrap:  'flex flex-col gap-2',

@@ -1,22 +1,6 @@
-"""
-
-REST API views for the RAG query pipeline and query history.
-
-Endpoints
----------
-POST   /api/rag/query/          — Submit a question; returns a generated answer.
-GET    /api/rag/history/        — List the authenticated user's query history.
-GET    /api/rag/history/{id}/   — Retrieve a single query history entry.
-
-Security
---------
-All endpoints require authentication (``IsAuthenticated``).
-Document-level security is resolved *inside* the service layer from
-``request.user`` — it is never derived from user-supplied input.
-"""
-
 import logging
 
+from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import (
     OpenApiExample,
     OpenApiResponse,
@@ -25,22 +9,167 @@ from drf_spectacular.utils import (
 )
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
-
-from rag.models import QueryHistory
+from django.conf import settings
+from rag.models import Chat, QueryHistory
 from rag.services.rag_query_service import rag_query_service
 
-from .serializers import QueryRequestSerializer, QueryHistorySerializer
+from .serializers import ChatSerializer, QueryRequestSerializer, QueryHistorySerializer
 
 logger = logging.getLogger(__name__)
+RESPONSE_MODE_MODELS = settings.RESPONSE_MODE_MODELS
 
 # Maps the user-facing ``mode`` value to the underlying model identifier.
 # Add entries here when new models are registered in LLMService.
-RESPONSE_MODE_MODELS = {
-    "quick":    "Qwen/Qwen2-0.5B-Instruct",
-    "detailed": "Qwen/Qwen2.5-1.5B-Instruct",
-}
+# ──────────────────────────────────────────────────────────────────────────────
+# Chat Management Endpoints
+# ──────────────────────────────────────────────────────────────────────────────
+
+@extend_schema_view(
+    list=extend_schema(summary="List all chats", tags=["RAG Chats"]),
+    create=extend_schema(summary="Create a new chat", tags=["RAG Chats"])
+)
+class ChatListCreateView(generics.ListCreateAPIView):
+    """
+    List user's active conversations or create a new empty chat.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ChatSerializer
+
+    def get_queryset(self):
+        # Enforce access control and hide soft-deleted chats
+        return Chat.objects.filter(user=self.request.user, is_deleted=False)
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
 
 
+@extend_schema_view(
+    destroy=extend_schema(summary="Delete a chat (Soft delete)", tags=["RAG Chats"])
+)
+class ChatDestroyView(generics.DestroyAPIView):
+    """
+    Soft-delete a chat session. Hides it from the user but keeps DB records for audit.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ChatSerializer
+    lookup_field = "id"
+
+    def get_queryset(self):
+        return Chat.objects.filter(user=self.request.user, is_deleted=False)
+
+    def perform_destroy(self, instance):
+        instance.is_deleted = True
+        instance.save()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Chat Message (RAG Trigger) Endpoints
+# ──────────────────────────────────────────────────────────────────────────────
+
+@extend_schema_view(
+    get=extend_schema(summary="View Chat History", tags=["RAG Messages"]),
+    post=extend_schema(summary="Ask a Question (Triggers RAG)", tags=["RAG Messages"])
+)
+class ChatMessageView(generics.GenericAPIView):
+    """
+    Handle viewing messages and submitting new RAG queries for a specific chat.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_serializer_class(self):
+        if self.request.method == 'POST':
+            return QueryRequestSerializer
+        return QueryHistorySerializer
+
+    def get_chat_object(self):
+        """Securely fetch the chat session"""
+        chat_id = self.kwargs.get("id") or self.kwargs.get("chat_id")
+        
+        if not chat_id:
+            logger.error("No chat_id found in URL kwargs")
+            raise Exception("chat_id not provided in URL")
+        
+        logger.debug(
+            "Fetching chat.",
+            extra={
+                "user_id": self.request.user.id,
+                "chat_id": chat_id,
+            }
+        )
+        
+        return get_object_or_404(
+            Chat,
+            id=chat_id,
+            user=self.request.user,
+            is_deleted=False   
+        )
+
+    def get(self, request, *args, **kwargs):
+        """View History: Returns list of Q&A pairs for this chat."""
+        chat = self.get_chat_object()
+        
+        messages = QueryHistory.objects.filter(
+            chat=chat 
+        ).order_by("created_at")
+        
+        serializer = self.get_serializer(messages, many=True)
+        return Response(serializer.data)
+
+    def post(self, request, *args, **kwargs):
+        """Ask a Question: Runs secure RAG pipeline and saves to this chat."""
+        chat = self.get_chat_object()
+        
+        serializer = self.get_serializer(data=request.data)
+        if not serializer.is_valid():
+            logger.warning(
+                "Query validation failed.",
+                extra={"user_id": request.user.id, "errors": serializer.errors}
+            )
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        validated = serializer.validated_data
+        query_text = validated["query"]
+        mode = validated.get("mode", "quick")
+        model_name = RESPONSE_MODE_MODELS.get(mode, settings.LLM_DEFAULT_MODEL)
+
+        # Auto-update chat title if it's the first message
+        if not chat.title:
+            chat.title = query_text[:50].strip()
+            chat.save(update_fields=["title"])
+
+        try:
+            result = rag_query_service.query(
+                query_text=query_text,
+                user=request.user,
+                model_name=model_name,
+                chat_session=chat  # ← Must match service parameter name
+            )
+        except Exception as exc:
+            logger.error(
+                "Unhandled exception in rag_query_service.query.",
+                extra={
+                    "user_id": request.user.id,
+                    "chat_id": chat.id,
+                    "error": str(exc)
+                },
+                exc_info=True,
+            )
+            return Response(
+                {"error": "Internal server error", "details": str(exc)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        # Update chat timestamp
+        if result.get("success"):
+            chat.save(update_fields=["updated_at"])
+
+        http_status = (
+            status.HTTP_200_OK 
+            if result.get("success") 
+            else status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+        return Response(result, status=http_status)
+    
 # ──────────────────────────────────────────────────────────────────────────────
 # Query endpoint
 # ──────────────────────────────────────────────────────────────────────────────

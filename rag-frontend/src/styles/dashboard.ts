@@ -61,21 +61,14 @@ export const ds = {
 
   // ── History list ───────────────────────────────────────────────────────
   historyList: 'flex-1 overflow-y-auto px-3 py-2 space-y-1 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:bg-[#C8E6E6] [&::-webkit-scrollbar-thumb]:rounded-full',
-  historyItem: 'px-3 py-3 rounded-xl cursor-pointer transition-colors hover:bg-[#F4FAFA] border border-transparent hover:border-[#C8E6E6]',
+  historyItem:        'px-3 py-3 rounded-xl cursor-pointer transition-colors hover:bg-[#F4FAFA] border border-transparent hover:border-[#C8E6E6]',
+  historyItemActive:  'bg-[#E0F5F5] border-[#C8E6E6]',
   historyQ:    'text-sm font-medium text-[#042A2B] truncate',
   historyMeta:  'flex items-center gap-2 mt-1.5',
   sourceBadge:  'inline-flex items-center text-[11px] font-mono font-semibold px-2 py-0.5 rounded-full',
 
   // ── Chat area ──────────────────────────────────────────────────────────
   chatArea: 'flex-1 flex flex-col overflow-hidden bg-[#FCFCFC]',
-
-  // Mode bar
-  modeBar:   'flex items-center gap-2.5 px-6 py-3 bg-white border-b border-[#C8E6E6] shrink-0',
-  modeLabel: 'text-xs font-mono font-bold text-[#5EB1BF] uppercase tracking-wider mr-1',
-  modeBtn:   'px-4 py-1.5 rounded-full border text-sm font-mono font-medium cursor-pointer transition-all',
-  modeBtnOn: 'border-[#0DABAB] bg-[#0DABAB] text-white shadow-sm',
-  modeBtnOff:'border-[#C8E6E6] text-[#5EB1BF] hover:border-[#0DABAB] hover:text-[#0DABAB] hover:bg-[#F4FAFA]',
-  modeHint:  'ml-auto text-xs font-mono text-[#5EB1BF]',
 
   // Messages scroll area
   messages: 'flex-1 overflow-y-auto px-6 py-6 space-y-6 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:bg-[#C8E6E6] [&::-webkit-scrollbar-thumb]:rounded-full',
@@ -115,5 +108,8 @@ export const ds = {
   inputRow:  'flex items-end gap-3 bg-[#F4FAFA] border border-[#C8E6E6] rounded-2xl px-5 py-4 focus-within:border-[#0DABAB] focus-within:ring-2 focus-within:ring-[#0DABAB]/15 transition-all',
   textarea:  'flex-1 bg-transparent text-sm text-[#042A2B] placeholder-[#5EB1BF] resize-none outline-none min-h-7 max-h-40 leading-relaxed',
   inputHint: 'text-xs font-mono text-[#5EB1BF] text-center mt-2',
+
+  // ── Mode dropdown (inside input row) ─────────────────────────────────
+  modeSelect:      'appearance-none bg-transparent text-xs font-mono font-semibold text-[#5EB1BF] hover:text-[#0DABAB] border border-[#C8E6E6] hover:border-[#0DABAB] rounded-lg px-2.5 py-1.5 cursor-pointer focus:outline-none transition-all shrink-0',
 
 } as const;

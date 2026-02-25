@@ -1,13 +1,9 @@
 """
-
 Manages loading, inference, and unloading of local Qwen causal-language models.
 
 Model registry
 --------------
-Two models are supported out of the box:
-
-* ``Qwen/Qwen2-0.5B-Instruct``   — "quick" mode; fast, lower quality.
-* ``Qwen/Qwen2.5-1.5B-Instruct`` — "detailed" mode; slower, higher quality.
+Models are configured in settings.py RESPONSE_MODE_MODELS.
 
 Models are kept in three parallel class-level registries (tokenizer, model,
 pipeline) and lazily loaded on first use.  Call ``load_all_models()`` at
@@ -36,6 +32,7 @@ import time
 from typing import Optional, Tuple
 
 import torch
+from django.conf import settings
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 
 logger = logging.getLogger(__name__)
@@ -51,21 +48,15 @@ class LLMService:
     the only instance.
     """
 
-    # Supported models.  Values are set to ``None`` until the model is loaded.
-    MODEL_REGISTRY = {
-        "Qwen/Qwen2-0.5B-Instruct":   None,
-        "Qwen/Qwen2.5-1.5B-Instruct": None,
-    }
-    TOKENIZER_REGISTRY = {
-        "Qwen/Qwen2-0.5B-Instruct":   None,
-        "Qwen/Qwen2.5-1.5B-Instruct": None,
-    }
-    PIPELINE_REGISTRY = {
-        "Qwen/Qwen2-0.5B-Instruct":   None,
-        "Qwen/Qwen2.5-1.5B-Instruct": None,
-    }
+    # Initialize registries from settings
+    MODEL_REGISTRY = {model: None for model in settings.RESPONSE_MODE_MODELS.values()}
+    TOKENIZER_REGISTRY = {model: None for model in settings.RESPONSE_MODE_MODELS.values()}
+    PIPELINE_REGISTRY = {model: None for model in settings.RESPONSE_MODE_MODELS.values()}
 
-    DEFAULT_MODEL = "Qwen/Qwen2-0.5B-Instruct"
+    DEFAULT_MODEL = settings.LLM_DEFAULT_MODEL
+
+    # Inference parameters from settings
+    INFERENCE_PARAMS = settings.LLM_INFERENCE_PARAMS
 
     # ──────────────────────────────────────────────────────────────────────────
     # Model lifecycle
@@ -96,7 +87,7 @@ class LLMService:
             )
             model_name = self.DEFAULT_MODEL
 
-        if self.PIPELINE_REGISTRY[model_name] is not None:
+        if self.PIPELINE_REGISTRY.get(model_name) is not None:
             logger.debug("Model already loaded.", extra={"model_name": model_name})
             return True
 
@@ -135,10 +126,11 @@ class LLMService:
                 model=model,
                 tokenizer=tokenizer,
                 device=0 if use_gpu else -1,
-                max_new_tokens=256,
-                temperature=0.7,
-                top_p=0.95,
-                do_sample=True,
+                max_new_tokens=self.INFERENCE_PARAMS["max_new_tokens"],
+                temperature=self.INFERENCE_PARAMS["temperature"],
+                top_p=self.INFERENCE_PARAMS["top_p"],
+                do_sample=self.INFERENCE_PARAMS["do_sample"],
+                repetition_penalty=self.INFERENCE_PARAMS["repetition_penalty"],
                 pad_token_id=tokenizer.eos_token_id,
             )
 
@@ -260,7 +252,7 @@ class LLMService:
         query: str,
         context: str,
         model_name: Optional[str] = None,
-        max_tokens: int = 256,
+        max_tokens: Optional[int] = None,
     ) -> Tuple[str, bool]:
         """
         Generate an answer grounded in *context*.
@@ -273,6 +265,7 @@ class LLMService:
             context:    Retrieved document text to ground the answer.
             model_name: Model to use. ``None`` uses ``DEFAULT_MODEL``.
             max_tokens: Maximum new tokens to generate (LLM path only).
+                        Falls back to settings value if not provided.
 
         Returns:
             A ``(answer, used_llm)`` tuple where ``used_llm`` is ``True`` when
@@ -280,6 +273,7 @@ class LLMService:
             fallback was used.
         """
         model_name = model_name or self.DEFAULT_MODEL
+        max_tokens = max_tokens or self.INFERENCE_PARAMS["max_new_tokens"]
 
         if self.is_available(model_name):
             logger.debug(
@@ -334,9 +328,10 @@ class LLMService:
         result = pipe(
             prompt,
             max_new_tokens=max_tokens,
-            temperature=0.7,
-            top_p=0.95,
-            do_sample=True,
+            temperature=self.INFERENCE_PARAMS["temperature"],
+            top_p=self.INFERENCE_PARAMS["top_p"],
+            do_sample=self.INFERENCE_PARAMS["do_sample"],
+            repetition_penalty=self.INFERENCE_PARAMS["repetition_penalty"],
             pad_token_id=tokenizer.eos_token_id,
         )
 
@@ -443,5 +438,7 @@ class LLMService:
             tokenize=False,
             add_generation_prompt=True,
         )
+
+
 # Module-level singleton — import and call directly.
 llm_service = LLMService()

@@ -29,6 +29,7 @@ import os
 from typing import List
 
 import numpy as np
+from django.conf import settings
 from optimum.onnxruntime import ORTModelForFeatureExtraction
 from transformers import AutoTokenizer
 
@@ -39,15 +40,16 @@ class EmbeddingService:
     """
     Generate dense sentence embeddings using a quantised ONNX model.
 
-    Attributes:
-        MODEL_NAME:     HuggingFace model identifier used on first run for
-                        ONNX export.
-        ONNX_CACHE_DIR: Local directory where the converted model is stored.
-                        Mount a persistent volume here in production.
+    Configuration is loaded from Django settings:
+    - EMBEDDING_MODEL_NAME: HuggingFace model identifier
+    - EMBEDDING_ONNX_CACHE_DIR: Local directory for cached ONNX model
+    - EMBEDDING_ONNX_PROVIDER: ONNX Runtime execution provider
     """
 
-    MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-    ONNX_CACHE_DIR = "/app/models/onnx/all-MiniLM-L6-v2"
+    # Configuration from settings.py
+    MODEL_NAME = settings.EMBEDDING_MODEL_NAME
+    ONNX_CACHE_DIR = settings.EMBEDDING_ONNX_CACHE_DIR
+    ONNX_PROVIDER = settings.EMBEDDING_ONNX_PROVIDER
 
     _tokenizer = None
     _model = None
@@ -82,25 +84,32 @@ class EmbeddingService:
         if already_exported:
             logger.info(
                 "Loading ONNX model from local cache.",
-                extra={"cache_dir": self.ONNX_CACHE_DIR},
+                extra={
+                    "cache_dir": self.ONNX_CACHE_DIR,
+                    "provider": self.ONNX_PROVIDER,
+                },
             )
             self._tokenizer = AutoTokenizer.from_pretrained(self.ONNX_CACHE_DIR)
             self._model = ORTModelForFeatureExtraction.from_pretrained(
                 self.ONNX_CACHE_DIR,
-                provider="CPUExecutionProvider",
+                provider=self.ONNX_PROVIDER,
             )
         else:
             logger.info(
                 "ONNX model not found — exporting from HuggingFace Hub. "
                 "This may take a few minutes on first run.",
-                extra={"model_name": self.MODEL_NAME, "cache_dir": self.ONNX_CACHE_DIR},
+                extra={
+                    "model_name": self.MODEL_NAME,
+                    "cache_dir": self.ONNX_CACHE_DIR,
+                    "provider": self.ONNX_PROVIDER,
+                },
             )
             os.makedirs(self.ONNX_CACHE_DIR, exist_ok=True)
             self._tokenizer = AutoTokenizer.from_pretrained(self.MODEL_NAME)
             self._model = ORTModelForFeatureExtraction.from_pretrained(
                 self.MODEL_NAME,
                 export=True,
-                provider="CPUExecutionProvider",
+                provider=self.ONNX_PROVIDER,
             )
             self._model.save_pretrained(self.ONNX_CACHE_DIR)
             self._tokenizer.save_pretrained(self.ONNX_CACHE_DIR)
@@ -198,7 +207,13 @@ class EmbeddingService:
             logger.warning("embed_batch called with empty list — returning [].")
             return []
 
-        logger.debug("Embedding batch.", extra={"batch_size": len(texts)})
+        logger.debug(
+            "Embedding batch.",
+            extra={
+                "batch_size": len(texts),
+                "model_name": self.MODEL_NAME,
+            },
+        )
 
         tokenizer, model = self.load()
 
@@ -214,7 +229,10 @@ class EmbeddingService:
         except Exception as exc:
             logger.error(
                 "ONNX model inference failed.",
-                extra={"batch_size": len(texts)},
+                extra={
+                    "batch_size": len(texts),
+                    "model_name": self.MODEL_NAME,
+                },
                 exc_info=True,
             )
             raise
@@ -224,7 +242,11 @@ class EmbeddingService:
 
         logger.debug(
             "Batch embedded successfully.",
-            extra={"batch_size": len(texts), "embedding_dim": embeddings.shape[1]},
+            extra={
+                "batch_size": len(texts),
+                "embedding_dim": embeddings.shape[1],
+                "model_name": self.MODEL_NAME,
+            },
         )
         return embeddings.tolist()
 

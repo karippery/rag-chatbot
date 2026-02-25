@@ -28,16 +28,23 @@ import logging
 import time
 from typing import Dict, List, Optional, Tuple
 
+from django.conf import settings
+
 from documents.models import DocumentChunk
 from documents.services.embedding import embedding_service
-from rag.models import QueryHistory
+from rag.models import Chat, QueryHistory
 from rag.services.access_control import get_user_allowed_security_levels
 from rag.services.llm_service import llm_service
 
 logger = logging.getLogger(__name__)
 
-# Number of chunks to retrieve per query.
-TOP_K = 5
+# ──────────────────────────────────────────────────────────────────────────────
+# Configuration from settings.py
+# ──────────────────────────────────────────────────────────────────────────────
+
+TOP_K = settings.TOP_K
+SIMILARITY_THRESHOLD = settings.SIMILARITY_THRESHOLD
+MAX_CONTEXT_LENGTH = settings.RAG_MAX_CONTEXT_LENGTH
 
 
 class RAGQueryService:
@@ -50,8 +57,8 @@ class RAGQueryService:
                             order until the budget is exhausted.
     """
 
-    def __init__(self, max_context_length: int = 2000) -> None:
-        self.max_context_length = max_context_length
+    def __init__(self, max_context_length: Optional[int] = None) -> None:
+        self.max_context_length = max_context_length or MAX_CONTEXT_LENGTH
 
     # ──────────────────────────────────────────────────────────────────────────
     # Public API
@@ -62,17 +69,21 @@ class RAGQueryService:
         query_text: str,
         user=None,
         model_name: Optional[str] = None,
+        chat_session: Optional[Chat] = None,
     ) -> Dict:
         """
         Run the full RAG pipeline for a single query.
 
         Args:
-            query_text: The user's natural-language question.
-            user:       Django ``User`` instance used to resolve security
-                        clearance.  ``None`` is treated as an unauthenticated
-                        guest (access restricted to ``LOW`` security level).
-            model_name: LLM to use for generation.  ``None`` uses the service's
-                        ``DEFAULT_MODEL``.
+            query_text:    The user's natural-language question.
+            user:          Django ``User`` instance used to resolve security
+                           clearance.  ``None`` is treated as an unauthenticated
+                           guest (access restricted to ``LOW`` security level).
+            model_name:    LLM to use for generation.  ``None`` uses the
+                           service's ``DEFAULT_MODEL``.
+            chat_session:  Optional ``Chat`` to link the QueryHistory
+                           record to. If provided, the query will be associated
+                           with this chat session.
 
         Returns:
             A response dict.  Always contains ``"success"`` (bool) and
@@ -109,6 +120,7 @@ class RAGQueryService:
             "RAG pipeline started.",
             extra={
                 "user_id": user_id,
+                "chat_session_id": chat_session.id if chat_session else None,
                 "model_name": model_name,
                 "query_preview": query_text[:120],
             },
@@ -133,7 +145,11 @@ class RAGQueryService:
             # ── Stage 2: Retrieve chunks ──────────────────────────────────────
             logger.debug(
                 "Retrieving chunks.",
-                extra={"user_id": user_id, "top_k": TOP_K, "allowed_levels": allowed_levels},
+                extra={
+                    "user_id": user_id,
+                    "top_k": TOP_K,
+                    "allowed_levels": allowed_levels,
+                },
             )
             chunks, chunk_ids = self._retrieve_chunks(
                 query_embedding=query_embedding,
@@ -155,6 +171,7 @@ class RAGQueryService:
                     query_embedding=query_embedding,
                     effective_max_level=effective_max_level,
                     start_time=start_time,
+                    chat_session=chat_session,
                 )
 
             # ── Stage 3: Build context ────────────────────────────────────────
@@ -164,7 +181,7 @@ class RAGQueryService:
                 extra={
                     "user_id": user_id,
                     "context_chars": len(context),
-                    "chunks_included": len(context.split("[Source")),
+                    "chunks_included": len(chunks),
                 },
             )
 
@@ -186,6 +203,7 @@ class RAGQueryService:
 
             query_history = QueryHistory.objects.create(
                 user=user,
+                chat=chat_session,
                 query=query_text,
                 query_embedding=query_embedding,
                 retrieved_chunk_count=len(chunks),
@@ -204,6 +222,7 @@ class RAGQueryService:
                 extra={
                     "user_id": user_id,
                     "query_id": query_history.id,
+                    "chat_session_id": chat_session.id if chat_session else None,
                     "source": response_source,
                     "model_name": model_name,
                     "chunks_used": len(chunks),
@@ -228,7 +247,7 @@ class RAGQueryService:
                         "document_id": chunk.document_id,
                         "document_title": chunk.document.title,
                         "chunk_index": chunk.chunk_index,
-                        "similarity_score": round(chunk.similarity, 4),  # ← NEW
+                        "similarity_score": round(chunk.similarity, 4),
                     }
                     for chunk in chunks
                 ],
@@ -250,6 +269,7 @@ class RAGQueryService:
             # Attempt to persist a FAILED history record for audit purposes.
             q_id = self._persist_error_history(
                 user=user,
+                chat_session=chat_session,
                 query_text=query_text,
                 exc=exc,
                 latency_ms=latency_ms,
@@ -271,7 +291,7 @@ class RAGQueryService:
         self,
         query_embedding: List[float],
         allowed_levels: List[str],
-        similarity_threshold: float = 0.25,  # Tune this value for your data
+        similarity_threshold: Optional[float] = None,
     ) -> Tuple[List[DocumentChunk], List[int]]:
         """
         Query pgvector for the top-K most similar active chunks above a
@@ -281,27 +301,26 @@ class RAGQueryService:
         LLM as if they were relevant — a major cause of hallucination when
         the queried concept does not exist in any document.
 
-        A value of 0.35 works well for all-MiniLM-L6-v2. If you find too
-        many legitimate queries returning NO_RESULTS, lower it toward 0.25.
-        If hallucinations persist, raise it toward 0.45.
-
         Args:
             query_embedding:     Dense query vector.
             allowed_levels:      Security levels the user may access.
             similarity_threshold: Minimum cosine similarity (0–1) a chunk must
                                   score to be included. Chunks below this are
                                   discarded before being passed to the LLM.
+                                  Falls back to settings value if not provided.
 
         Returns:
             ``(chunks, chunk_ids)``
         """
         from pgvector.django import CosineDistance
 
+        threshold = similarity_threshold or SIMILARITY_THRESHOLD
+
         qs = (
             DocumentChunk.objects
             .filter(is_active=True, security_level__in=allowed_levels)
             .annotate(similarity=1 - CosineDistance("embedding", query_embedding))
-            .filter(similarity__gte=similarity_threshold)   # ← NEW: discard weak matches
+            .filter(similarity__gte=threshold)
             .select_related("document")
             .order_by("-similarity")[:TOP_K]
         )
@@ -312,7 +331,7 @@ class RAGQueryService:
             logger.info(
                 "No chunks met the similarity threshold.",
                 extra={
-                    "threshold": similarity_threshold,
+                    "threshold": threshold,
                     "allowed_levels": allowed_levels,
                 },
             )
@@ -321,14 +340,14 @@ class RAGQueryService:
             logger.debug(
                 "Chunks retrieved above threshold.",
                 extra={
-                    "threshold": similarity_threshold,
+                    "threshold": threshold,
                     "chunks_returned": len(chunks),
                     "similarity_scores": scores,
                 },
             )
 
         return chunks, [c.id for c in chunks]
-    
+
     def _build_context(self, chunks: List[DocumentChunk]) -> str:
         """
         Concatenate chunk texts into a single context string.
@@ -370,6 +389,7 @@ class RAGQueryService:
         query_embedding: List[float],
         effective_max_level: str,
         start_time: float,
+        chat_session: Optional[Chat] = None,
     ) -> Dict:
         """
         Build and persist a NO_RESULTS response.
@@ -380,6 +400,7 @@ class RAGQueryService:
             query_embedding:    Embedded query vector.
             effective_max_level: The user's highest permitted security level.
             start_time:         ``time.time()`` value at pipeline entry.
+            chat_session:       Optional chat session to link the record to.
 
         Returns:
             A success-shaped response dict with ``source="NO_RESULTS"``.
@@ -391,6 +412,7 @@ class RAGQueryService:
         try:
             qh = QueryHistory.objects.create(
                 user=user,
+                chat=chat_session,
                 query=query_text,
                 query_embedding=query_embedding,
                 retrieved_chunk_count=0,
@@ -430,6 +452,7 @@ class RAGQueryService:
         exc: Exception,
         latency_ms: int,
         effective_max_level: str,
+        chat_session: Optional[Chat] = None,
     ) -> Optional[int]:
         """
         Write an ERROR ``QueryHistory`` record for a failed pipeline run.
@@ -443,6 +466,7 @@ class RAGQueryService:
             exc:                 The exception that caused the failure.
             latency_ms:          Total elapsed time up to the failure point.
             effective_max_level: User's security level at time of query.
+            chat_session:        Optional chat session to link the record to.
 
         Returns:
             The ``QueryHistory.id`` on success, or ``None`` if the DB write
@@ -451,6 +475,7 @@ class RAGQueryService:
         try:
             qh = QueryHistory.objects.create(
                 user=user,
+                chat=chat_session,
                 query=query_text,
                 response=f"Error: {exc}",
                 response_source="ERROR",

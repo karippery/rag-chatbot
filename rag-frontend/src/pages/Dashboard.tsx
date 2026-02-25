@@ -1,8 +1,12 @@
 /**
  * src/pages/Dashboard.tsx
  *
- * Main workspace: document sidebar (left) + RAG chat (right).
- * All API calls go through src/api/documents.ts and src/api/rag.ts.
+ * Full workspace:
+ *  - Left sidebar: document upload/list + chat session list
+ *  - Right: active chat with RAG query input
+ *
+ * Architecture: chat-session-based (POST /rag/chats/<id>/message/)
+ * Documents:    standard CRUD   (GET/POST /documents/v1/...)
  */
 
 import {
@@ -12,25 +16,26 @@ import {
   useCallback,
   useLayoutEffect,
 } from 'react';
-import type { KeyboardEvent } from 'react';
+import type { KeyboardEvent, MouseEvent } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { documentsApi } from '../api/documents';
 import type { Document as Doc } from '../api/documents';
-import { ragApi } from '../api/rag';
-import type { HistoryItem, Source } from '../api/rag';
+import { chatApi } from '../api/rag';
+import type { ChatSession, ChatMessage, Source } from '../api/rag';
 import { ds } from '../styles/dashboard';
 import { ui, statusDot, sourceBadgeVariant, fileTypeBadge } from '../styles/ui';
 
-// ── Types ──────────────────────────────────────────────────────────────────
+// ── Local UI types ─────────────────────────────────────────────────────────
 
+/** In-memory message used to render the chat — merges user + assistant sides */
 interface Message {
-  id:        string;
-  role:      'user' | 'assistant';
-  text:      string;
-  source?:   string;
-  latency?:  number;
-  model?:    string | null;
-  sources?:  Source[];
+  id:       string;
+  role:     'user' | 'assistant';
+  text:     string;
+  source?:  string;
+  latency?: number;
+  model?:   string | null;
+  sources?: Source[];
 }
 
 // ── Icons ──────────────────────────────────────────────────────────────────
@@ -64,15 +69,20 @@ const Icon = {
       <polygon points="22 2 15 22 11 13 2 9 22 2"/>
     </svg>
   ),
+  Plus: () => (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+      <line x1="12" y1="5" x2="12" y2="19"/>
+      <line x1="5" y1="12" x2="19" y2="12"/>
+    </svg>
+  ),
   ChevronRight: () => (
     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
       <polyline points="9 18 15 12 9 6"/>
     </svg>
   ),
-  Inbox: () => (
+  Chat: () => (
     <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1">
-      <polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/>
-      <path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
     </svg>
   ),
   Logout: () => (
@@ -86,14 +96,31 @@ const Icon = {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-function uid() {
-  return Math.random().toString(36).slice(2);
-}
+function uid() { return Math.random().toString(36).slice(2); }
 
 function fmtSize(bytes: number) {
   if (bytes < 1024)        return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function fmtDate(iso: string) {
+  const d = new Date(iso);
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) {
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+// ── ChatMessage → local Message converter ──────────────────────────────────
+
+function fromChatMessage(m: ChatMessage): [Message, Message] {
+  return [
+    { id: `u-${m.id}`, role: 'user',      text: m.query },
+    { id: `a-${m.id}`, role: 'assistant', text: m.response,
+      source: m.response_source, sources: m.sources },
+  ];
 }
 
 // ── Sub-components ─────────────────────────────────────────────────────────
@@ -104,11 +131,8 @@ function TypingIndicator() {
       <div className={`${ds.msgAvatar} ${ds.msgAvatarAi}`}>AI</div>
       <div className={ds.typingDots}>
         {[0, 1, 2].map(i => (
-          <div
-            key={i}
-            className={ds.typingDot}
-            style={{ animation: `bounce 1.2s ${i * 0.2}s infinite` }}
-          />
+          <div key={i} className={ds.typingDot}
+               style={{ animation: `bounce 1.2s ${i * 0.2}s infinite` }} />
         ))}
       </div>
     </div>
@@ -120,7 +144,8 @@ function SourcesAccordion({ sources }: { sources: Source[] }) {
   return (
     <div>
       <button className={ds.sourcesBtn} onClick={() => setOpen(v => !v)}>
-        <span style={{ transform: open ? 'rotate(90deg)' : 'none', transition: 'transform 0.2s', display: 'inline-flex' }}>
+        <span style={{ transform: open ? 'rotate(90deg)' : 'none',
+                       transition: 'transform 0.2s', display: 'inline-flex' }}>
           <Icon.ChevronRight />
         </span>
         {sources.length} source{sources.length > 1 ? 's' : ''}
@@ -132,7 +157,9 @@ function SourcesAccordion({ sources }: { sources: Source[] }) {
               <div className={ds.sourceNum}>{i + 1}</div>
               <span className={`flex-1 ${ui.mono} truncate`}>{src.document_title}</span>
               {src.similarity_score != null && (
-                <span className={ui.caption}>{(src.similarity_score * 100).toFixed(0)}%</span>
+                <span className={ui.caption}>
+                  {(src.similarity_score * 100).toFixed(0)}%
+                </span>
               )}
             </div>
           ))}
@@ -142,8 +169,8 @@ function SourcesAccordion({ sources }: { sources: Source[] }) {
   );
 }
 
-function ChatMessage({ msg, userInitial }: { msg: Message; userInitial: string }) {
-  const isUser = msg.role === 'user';
+function ChatBubble({ msg, userInitial }: { msg: Message; userInitial: string }) {
+  const isUser   = msg.role === 'user';
   const badgeCls = sourceBadgeVariant[msg.source ?? ''] ?? sourceBadgeVariant.NO_RESULTS;
 
   return (
@@ -157,7 +184,7 @@ function ChatMessage({ msg, userInitial }: { msg: Message; userInitial: string }
           <>
             <div className={ds.msgMeta}>
               {msg.source  && <span className={`${ds.sourceBadge} ${badgeCls}`}>{msg.source}</span>}
-              {msg.latency  != null && <span>{msg.latency}ms</span>}
+              {msg.latency != null && <span>{msg.latency}ms</span>}
               {msg.model   && <span>{msg.model.split('/').pop()}</span>}
             </div>
             {msg.sources && msg.sources.length > 0 && (
@@ -174,54 +201,71 @@ function ChatMessage({ msg, userInitial }: { msg: Message; userInitial: string }
 
 export default function Dashboard() {
   const { user, logout } = useAuth();
+  const userInitial = (user?.full_name || user?.email || 'U')[0].toUpperCase();
 
-  // ── Document state ───────────────────────────────────────────────────────
+  // ── Sidebar tab ───────────────────────────────────────────────────────────
+  const [tab, setTab] = useState<'docs' | 'chats'>('chats');
+
+  // ── Document state ────────────────────────────────────────────────────────
   const [docs,        setDocs]        = useState<Doc[]>([]);
   const [docsLoading, setDocsLoading] = useState(true);
-  const [tab,         setTab]         = useState<'docs' | 'history'>('docs');
-
-  // Upload state
-  const [file,         setFile]         = useState<File | null>(null);
-  const [title,        setTitle]        = useState('');
-  const [secLevel,     setSecLevel]     = useState('LOW');
-  const [uploading,    setUploading]    = useState(false);
-  const [uploadPct,    setUploadPct]    = useState(0);
-  const [uploadMsg,    setUploadMsg]    = useState('');
-  const [dragOver,     setDragOver]     = useState(false);
+  const [file,        setFile]        = useState<File | null>(null);
+  const [title,       setTitle]       = useState('');
+  const [secLevel,    setSecLevel]    = useState('LOW');
+  const [uploading,   setUploading]   = useState(false);
+  const [uploadPct,   setUploadPct]   = useState(0);
+  const [uploadMsg,   setUploadMsg]   = useState('');
+  const [dragOver,    setDragOver]    = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // ── Chat state ───────────────────────────────────────────────────────────
-  const [messages,   setMessages]   = useState<Message[]>([]);
-  const [history,    setHistory]    = useState<HistoryItem[]>([]);
-  const [input,      setInput]      = useState('');
-  const [querying,   setQuerying]   = useState(false);
-  const [mode,       setMode]       = useState<'quick' | 'detailed'>('quick');
+  // ── Chat session state ────────────────────────────────────────────────────
+  const [sessions,      setSessions]      = useState<ChatSession[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(true);
+  const [activeSession, setActiveSession] = useState<ChatSession | null>(null);
+  const [messages,      setMessages]      = useState<Message[]>([]);
+  const [messagesLoading, setMessagesLoading] = useState(false);
+  const [input,         setInput]         = useState('');
+  const [querying,      setQuerying]      = useState(false);
+  const [mode,          setMode]          = useState<'quick' | 'detailed'>('quick');
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef    = useRef<HTMLTextAreaElement>(null);
 
-  const userInitial = (user?.full_name || user?.email || 'U')[0].toUpperCase();
-
-  // ── Data fetching ────────────────────────────────────────────────────────
+  // ── Data fetching ─────────────────────────────────────────────────────────
 
   const fetchDocs = useCallback(async () => {
     try {
       const { data } = await documentsApi.list();
-      setDocs(data.results ?? data as any);
+      setDocs((data as any).results ?? data);
     } catch { /* silent */ }
     finally { setDocsLoading(false); }
   }, []);
 
-  const fetchHistory = useCallback(async () => {
+  const fetchSessions = useCallback(async () => {
     try {
-      const { data } = await ragApi.history();
-      setHistory(data.results ?? data as any);
+      const { data } = await chatApi.listSessions();
+      setSessions((data as any).results ?? data);
     } catch { /* silent */ }
+    finally { setSessionsLoading(false); }
+  }, []);
+
+  const loadSessionMessages = useCallback(async (session: ChatSession) => {
+    setActiveSession(session);
+    setMessages([]);
+    setMessagesLoading(true);
+    try {
+      const { data } = await chatApi.getMessages(session.id);
+      const msgs: Message[] = ((data as any).results ?? data)
+        .flatMap((m: ChatMessage) => fromChatMessage(m));
+      setMessages(msgs);
+    } catch { /* silent */ }
+    finally { setMessagesLoading(false); }
   }, []);
 
   useEffect(() => { fetchDocs(); }, [fetchDocs]);
-  useEffect(() => { if (tab === 'history') fetchHistory(); }, [tab, fetchHistory]);
+  useEffect(() => { fetchSessions(); }, [fetchSessions]);
 
-  // Poll document status every 8s to catch indexing completion
+  // Poll document status every 8s
   useEffect(() => {
     const id = setInterval(fetchDocs, 8000);
     return () => clearInterval(id);
@@ -232,7 +276,32 @@ export default function Dashboard() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, querying]);
 
-  // ── Upload handlers ──────────────────────────────────────────────────────
+  // ── Session actions ───────────────────────────────────────────────────────
+
+  async function handleNewChat() {
+    try {
+      const { data } = await chatApi.createSession();
+      setSessions(prev => [data, ...prev]);
+      setActiveSession(data);
+      setMessages([]);
+      setTab('chats');
+    } catch { /* silent */ }
+  }
+
+  async function handleDeleteSession(id: number, e: MouseEvent) {
+    e.stopPropagation();
+    if (!confirm('Delete this conversation?')) return;
+    try {
+      await chatApi.deleteSession(id);
+      setSessions(prev => prev.filter(s => s.id !== id));
+      if (activeSession?.id === id) {
+        setActiveSession(null);
+        setMessages([]);
+      }
+    } catch { /* silent */ }
+  }
+
+  // ── Upload handlers ───────────────────────────────────────────────────────
 
   function pickFile(f: File) {
     setFile(f);
@@ -258,7 +327,7 @@ export default function Dashboard() {
         setFile(null); setTitle(''); setUploadPct(0); setUploadMsg('');
         if (fileInputRef.current) fileInputRef.current.value = '';
         fetchDocs();
-      }, 1000);
+      }, 1200);
     } catch (err: any) {
       clearInterval(ticker);
       const msg = err.response?.data?.file?.[0]
@@ -272,7 +341,7 @@ export default function Dashboard() {
     }
   }
 
-  async function handleDelete(id: number) {
+  async function handleDeleteDoc(id: number) {
     if (!confirm('Delete this document and all its chunks?')) return;
     try {
       await documentsApi.delete(id);
@@ -280,29 +349,54 @@ export default function Dashboard() {
     } catch { /* silent */ }
   }
 
-  // ── Chat handlers ────────────────────────────────────────────────────────
+  // ── Send message ──────────────────────────────────────────────────────────
 
   async function sendMessage() {
     const q = input.trim();
     if (!q || querying) return;
 
-    setMessages(prev => [...prev, { id: uid(), role: 'user', text: q }]);
+    // Auto-create a session if none is active
+    let session = activeSession;
+    if (!session) {
+      try {
+        const { data } = await chatApi.createSession();
+        session = data;
+        setSessions(prev => [data, ...prev]);
+        setActiveSession(data);
+      } catch { return; }
+    }
+
+    // Optimistically add user bubble
+    const userMsgId = uid();
+    setMessages(prev => [...prev, { id: userMsgId, role: 'user', text: q }]);
     setInput('');
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
     setQuerying(true);
 
     try {
-      const { data } = await ragApi.query(q, mode);
-      setMessages(prev => [...prev, {
-        id:      uid(),
-        role:    'assistant',
-        text:    data.answer,
-        source:  data.source,
-        latency: data.latency_ms,
-        model:   data.model,
-        sources: data.sources,
-      }]);
-      fetchHistory();
+      const { data } = await chatApi.sendMessage(session.id, q, mode);
+
+      if (data.success) {
+        setMessages(prev => [...prev, {
+          id:      uid(),
+          role:    'assistant',
+          text:    data.answer,
+          source:  data.source,
+          latency: data.latency_ms,
+          model:   data.model,
+          sources: data.sources,
+        }]);
+      } else {
+        setMessages(prev => [...prev, {
+          id:     uid(),
+          role:   'assistant',
+          text:   data.error ?? 'Something went wrong.',
+          source: 'ERROR',
+        }]);
+      }
+
+      // Refresh sessions so title + message_count update
+      fetchSessions();
     } catch (err: any) {
       setMessages(prev => [...prev, {
         id:     uid(),
@@ -316,50 +410,36 @@ export default function Dashboard() {
   }
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
-    }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   }
 
   function handleTextareaInput(v: string) {
     setInput(v);
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
-      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 160)}px`;
+      textareaRef.current.style.height =
+        `${Math.min(textareaRef.current.scrollHeight, 160)}px`;
     }
-  }
-
-  function loadHistoryItem(item: HistoryItem) {
-    setMessages(prev => [
-      ...prev,
-      { id: uid(), role: 'user',      text: item.query },
-      { id: uid(), role: 'assistant', text: item.response,
-        source: item.response_source, sources: item.sources },
-    ]);
-    setTab('docs');
   }
 
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <>
-      {/* Bounce animation for typing dots */}
       <style>{`
         @keyframes bounce {
-          0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
-          30%            { transform: translateY(-4px); opacity: 1; }
+          0%,60%,100% { transform:translateY(0);   opacity:0.4; }
+          30%          { transform:translateY(-5px); opacity:1;   }
         }
       `}</style>
 
       <div className={ds.shell}>
 
-        {/* ── Header ────────────────────────────────────────────────── */}
+        {/* ── Header ──────────────────────────────────────────────────── */}
         <header className={ds.header}>
           <div className={ds.headerBrand}>
             <div className={ds.headerIcon}><Icon.Logo /></div>
-            <Icon.Logo />
-            RAG
+            SecureRAG
           </div>
           <div className={ds.headerDiv} />
           <span className={ds.headerTitle}>Knowledge Assistant</span>
@@ -367,11 +447,7 @@ export default function Dashboard() {
           <div className={ds.headerUser}>
             <div className={ui.avatar}>{userInitial}</div>
             <span>{user?.email}</span>
-            <button
-              onClick={logout}
-              className={ui.btnGhost}
-              title="Sign out"
-            >
+            <button onClick={logout} className={ui.btnGhost} title="Sign out">
               <Icon.Logout />
             </button>
           </div>
@@ -379,26 +455,67 @@ export default function Dashboard() {
 
         <div className={ds.content}>
 
-          {/* ── Sidebar ─────────────────────────────────────────────── */}
+          {/* ── Sidebar ───────────────────────────────────────────────── */}
           <aside className={ds.sidebar}>
 
-            {/* Tab nav */}
+            {/* Tab bar */}
             <div className={ds.tabBar}>
-              {(['docs', 'history'] as const).map(t => (
-                <button
-                  key={t}
-                  onClick={() => setTab(t)}
-                  className={`${ds.tab} ${tab === t ? ds.tabActive : ds.tabInactive}`}
-                >
-                  {t === 'docs' ? 'Documents' : 'History'}
+              {(['chats', 'docs'] as const).map(t => (
+                <button key={t} onClick={() => setTab(t)}
+                        className={`${ds.tab} ${tab === t ? ds.tabActive : ds.tabInactive}`}>
+                  {t === 'chats' ? 'Chats' : 'Documents'}
                 </button>
               ))}
             </div>
 
-            {/* ── Documents tab ──────────────────────────────────────── */}
+            {/* ── Chats tab ─────────────────────────────────────────── */}
+            {tab === 'chats' && (
+              <>
+                <div className="px-4 pt-4 pb-2 flex items-center justify-between">
+                  <span className={ui.sectionLabelSm}>Conversations</span>
+                  <button onClick={handleNewChat}
+                          className={`${ui.btnIcon} w-8 h-8 rounded-lg`}
+                          title="New chat">
+                    <Icon.Plus />
+                  </button>
+                </div>
+
+                <div className={ds.historyList}>
+                  {sessionsLoading ? (
+                    <div className={ds.docEmpty}>Loading…</div>
+                  ) : sessions.length === 0 ? (
+                    <div className={ds.docEmpty}>
+                      No conversations yet.{'\n'}Click + to start one.
+                    </div>
+                  ) : sessions.map(s => (
+                    <div key={s.id}
+                         className={`${ds.historyItem} ${activeSession?.id === s.id ? ds.historyItemActive : ''}`}
+                         onClick={() => loadSessionMessages(s)}>
+                      <div className={ds.historyQ}>
+                        {s.title || 'New conversation'}
+                      </div>
+                      <div className={ds.historyMeta}>
+                        <span className={ui.caption}>{fmtDate(s.updated_at)}</span>
+                        <span className={`${ds.sourceBadge} ${ui.badgeGrey} ml-auto`}>
+                          {s.message_count} msg{s.message_count !== 1 ? 's' : ''}
+                        </span>
+                        <button
+                          className={ds.docDelete}
+                          onClick={e => handleDeleteSession(s.id, e)}
+                          title="Delete">
+                          <Icon.Trash />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {/* ── Documents tab ─────────────────────────────────────── */}
             {tab === 'docs' && (
               <>
-                <div className={ds.sectionLabel}>Upload</div>
+                <div className={ui.sectionLabel}>Upload</div>
 
                 {/* Drop zone */}
                 <div
@@ -412,74 +529,61 @@ export default function Dashboard() {
                   }}
                   onClick={() => fileInputRef.current?.click()}
                 >
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept=".pdf,.docx,.doc,.txt"
-                    className="hidden"
-                    onChange={e => { const f = e.target.files?.[0]; if (f) pickFile(f); }}
-                  />
+                  <input ref={fileInputRef} type="file"
+                         accept=".pdf,.docx,.doc,.txt" className="hidden"
+                         onChange={e => { const f = e.target.files?.[0]; if (f) pickFile(f); }} />
                   <div className={ds.uploadIcon}><Icon.Upload /></div>
                   <div className={ds.uploadLabel}>
-                    {file ? file.name : 'Drop file here or click to browse'}
+                    {file ? file.name : 'Drop file or click to browse'}
                   </div>
                   <div className={ds.uploadHint}>
                     {file ? fmtSize(file.size) : 'PDF · DOCX · DOC · TXT · max 50 MB'}
                   </div>
                 </div>
 
-                {/* Title + security level + upload button */}
-                <div className={`${ds.controls} mt-2`}>
-                  <input
-                    type="text"
-                    value={title}
-                    onChange={e => setTitle(e.target.value)}
-                    placeholder="Document title"
-                    className={ui.inputSm()}
-                  />
-                  <select
-                    value={secLevel}
-                    onChange={e => setSecLevel(e.target.value)}
-                    className={ui.select}
-                  >
+                <div className={ds.controls}>
+                  <input type="text" value={title} placeholder="Document title"
+                         onChange={e => setTitle(e.target.value)}
+                         className={ui.inputSm()} />
+                  <select value={secLevel} onChange={e => setSecLevel(e.target.value)}
+                          className={ui.select}>
                     <option value="LOW">🔓 Low — Public</option>
                     <option value="MID">🔒 Mid — Internal</option>
                     <option value="HIGH">🔐 High — Confidential</option>
                     <option value="VERY_HIGH">🛡 Very High — Restricted</option>
                   </select>
-                  <button
-                    onClick={handleUpload}
-                    disabled={!file || !title.trim() || uploading}
-                    className={ui.btnSm}
-                  >
+                  <button onClick={handleUpload}
+                          disabled={!file || !title.trim() || uploading}
+                          className={ui.btnSm}>
                     {uploading ? 'Uploading…' : 'Upload Document'}
                   </button>
                 </div>
 
-                {/* Progress */}
                 {(uploadPct > 0 || uploadMsg) && (
-                  <div className={`${ds.progressWrap} px-3`}>
+                  <div className={ds.progressWrap}>
                     {uploadPct > 0 && (
                       <div className={ds.progressTrack}>
                         <div className={ds.progressFill} style={{ width: `${uploadPct}%` }} />
                       </div>
                     )}
                     {uploadMsg && (
-                      <div className={`${ds.progressLabel} ${uploadMsg.startsWith('Error') ? 'text-red-400' : ''}`}>
+                      <div className={uploadMsg.startsWith('Error')
+                        ? ds.progressError : ds.progressLabel}>
                         {uploadMsg}
                       </div>
                     )}
                   </div>
                 )}
 
-                <div className={ds.sectionLabel}>Your Documents</div>
+                <div className={ui.sectionLabel}>Your Documents</div>
 
-                {/* Document list */}
                 <div className={ds.docList}>
                   {docsLoading ? (
                     <div className={ds.docEmpty}>Loading…</div>
                   ) : docs.length === 0 ? (
-                    <div className={ds.docEmpty}>No documents yet.{'\n'}Upload one to get started.</div>
+                    <div className={ds.docEmpty}>
+                      No documents yet.{'\n'}Upload one to get started.
+                    </div>
                   ) : docs.map(doc => {
                     const ext = doc.file_type?.toLowerCase() ?? 'txt';
                     return (
@@ -495,11 +599,8 @@ export default function Dashboard() {
                         </div>
                         <div className={`${ds.docDot} ${statusDot[doc.status] ?? ds.docDotFallback}`}
                              title={doc.status} />
-                        <button
-                          className={ds.docDelete}
-                          onClick={() => handleDelete(doc.id)}
-                          title="Delete"
-                        >
+                        <button className={ds.docDelete} title="Delete"
+                                onClick={() => handleDeleteDoc(doc.id)}>
                           <Icon.Trash />
                         </button>
                       </div>
@@ -508,89 +609,45 @@ export default function Dashboard() {
                 </div>
               </>
             )}
-
-            {/* ── History tab ────────────────────────────────────────── */}
-            {tab === 'history' && (
-              <div className={ds.historyList}>
-                {history.length === 0 ? (
-                  <div className={ds.docEmpty}>No queries yet.</div>
-                ) : history.map(item => {
-                  const badgeCls = sourceBadgeVariant[item.response_source] ?? sourceBadgeVariant.NO_RESULTS;
-                  return (
-                    <div
-                      key={item.id}
-                      className={ds.historyItem}
-                      onClick={() => loadHistoryItem(item)}
-                    >
-                      <div className={ds.historyQ}>{item.query}</div>
-                      <div className={ds.historyMeta}>
-                        <span className={`${ds.sourceBadge} ${badgeCls}`}>
-                          {item.response_source}
-                        </span>
-                        <span className={ui.caption}>
-                          {new Date(item.created_at).toLocaleDateString()}
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
           </aside>
 
-          {/* ── Chat area ───────────────────────────────────────────── */}
+          {/* ── Chat area ─────────────────────────────────────────────── */}
           <main className={ds.chatArea}>
-
-            {/* Mode bar */}
-            <div className={ds.modeBar}>
-              <span className={ds.modeLabel}>model</span>
-              {(['quick', 'detailed'] as const).map(m => (
-                <button
-                  key={m}
-                  onClick={() => setMode(m)}
-                  className={`${ds.modeBtn} ${mode === m ? ds.modeBtnOn : ds.modeBtnOff}`}
-                >
-                  {m}
-                </button>
-              ))}
-              <span className={ds.modeHint}>
-                {mode === 'quick' ? 'Qwen2-0.5B · fast' : 'Qwen2.5-1.5B · thorough'}
-              </span>
-            </div>
-
             {/* Messages */}
             <div className={ds.messages}>
-              {messages.length === 0 && !querying ? (
+              {messagesLoading ? (
                 <div className={ds.emptyState}>
-                  <div className={ds.emptyIcon}><Icon.Inbox /></div>
+                  <div className={ui.spinnerTeal} />
+                </div>
+              ) : messages.length === 0 && !querying ? (
+                <div className={ds.emptyState}>
+                  <div className={ds.emptyIcon}><Icon.Chat /></div>
                   <h3 className={ds.emptyTitle}>
-                    Ask anything about your documents
+                    {activeSession
+                      ? 'Send a message to start'
+                      : 'Start a new conversation'}
                   </h3>
                   <p className={ds.emptySubtitle}>
-                    Upload a document on the left, then ask questions.
-                    Answers are grounded in your files only.
+                    {activeSession
+                      ? 'Ask anything about your uploaded documents.'
+                      : 'Select a chat from the sidebar or click + to begin.'}
                   </p>
-                  <div className={ds.chipWrap}>
-                    {[
-                      'Summarise this document',
-                      'What are the key skills listed?',
-                      'What experience does this person have?',
-                    ].map(s => (
-                      <button
-                        key={s}
-                        onClick={() => setInput(s)}
-                        className={ds.chip}
-                      >
-                        {s}
-                      </button>
-                    ))}
-                  </div>
+                  {activeSession && (
+                    <div className={ds.chipWrap}>
+                      {[
+                        'Summarise this document',
+                        'What are the key points?',
+                        'What experience is listed?',
+                      ].map(s => (
+                        <button key={s} onClick={() => setInput(s)} className={ds.chip}>{s}</button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ) : (
                 <>
                   {messages.map(msg => (
-                    <ChatMessage key={msg.id} msg={msg} userInitial={userInitial} />
+                    <ChatBubble key={msg.id} msg={msg} userInitial={userInitial} />
                   ))}
                   {querying && <TypingIndicator />}
                 </>
@@ -607,15 +664,24 @@ export default function Dashboard() {
                   value={input}
                   onChange={e => handleTextareaInput(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder="Ask a question about your documents…"
+                  placeholder={activeSession
+                    ? 'Ask a question about your documents…'
+                    : 'Type to start a new conversation…'}
                   className={ds.textarea}
                   disabled={querying}
                 />
-                <button
-                  onClick={sendMessage}
-                  disabled={!input.trim() || querying}
-                  className={ui.btnIcon}
+                <select
+                  value={mode}
+                  onChange={e => setMode(e.target.value as 'quick' | 'detailed')}
+                  className={ds.modeSelect}
+                  title={mode === 'quick' ? 'Qwen2-0.5B · fast' : 'Qwen2.5-1.5B · thorough'}
                 >
+                  <option value="quick">⚡ Quick</option>
+                  <option value="detailed">🔍 Detailed</option>
+                </select>
+                <button onClick={sendMessage}
+                        disabled={!input.trim() || querying}
+                        className={ui.btnIcon}>
                   <Icon.Send />
                 </button>
               </div>
