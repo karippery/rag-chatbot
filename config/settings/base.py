@@ -197,57 +197,68 @@ MINIO_CLIENT = Minio(
     secret_key=MINIO_SECRET_KEY,
     secure=MINIO_SECURE,
 )
-
-
-# Redis
-REDIS_URL = env("REDIS_URL", default="redis://redis:6379")
+# -----------------------------
+# Redis Configuration
+# -----------------------------
 REDIS_HOST = env("REDIS_HOST", default="redis")
-REDIS_PORT = env("REDIS_PORT", default=6379)
+REDIS_PORT = env("REDIS_PORT", default=6379, cast=int)
+REDIS_DB = env("REDIS_DB", default=0, cast=int)
+REDIS_CACHE_DB = env("REDIS_CACHE_DB", default=1, cast=int)
+REDIS_PASSWORD = env("REDIS_PASSWORD", default=None)
 
-REDIS_DB = os.environ.get('REDIS_DB', 0)  # Default DB for Celery
-REDIS_CACHE_DB = os.environ.get('REDIS_CACHE_DB', 1)  # Different DB for cache
+# Build URL correctly
+if REDIS_PASSWORD:
+    REDIS_URL = f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
+    REDIS_CACHE_URL = f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}/{REDIS_CACHE_DB}"
+else:
+    REDIS_URL = f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
+    REDIS_CACHE_URL = f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_CACHE_DB}"
 
-REDIS_URL = f"redis://redis:6379:{REDIS_PORT}/{REDIS_DB}"
-REDIS_CACHE_URL = f"redis://redis:6379:{REDIS_PORT}/{REDIS_CACHE_DB}"
-
-
-
-# Django Cache Configuration
+# Django Cache Configuration (django-redis backend)
 CACHES = {
     'default': {
-        'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+        'BACKEND': 'django_redis.cache.RedisCache',  
         'LOCATION': REDIS_CACHE_URL,
         'OPTIONS': {
-            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
-            'PARSER_CLASS': 'redis.connection.HiredisParser',
+            'CLIENT_CLASS': 'django_redis.client.DefaultClient',  
             'CONNECTION_POOL_CLASS': 'redis.BlockingConnectionPool',
             'CONNECTION_POOL_CLASS_KWARGS': {
                 'max_connections': 50,
                 'timeout': 20,
             },
-            'MAX_CONNECTIONS': 1000,
-            'PICKLE_VERSION': -1,  # Use latest pickle version
+            'SOCKET_CONNECT_TIMEOUT': 5,
+            'SOCKET_TIMEOUT': 5,
         },
-        'KEY_PREFIX': 'rag_cache',  # Prefix for all cache keys
-        'TIMEOUT': 300,  # 5 minutes default timeout
-        'VERSION': 1,  # Cache version for invalidation
+        'KEY_PREFIX': 'rag_cache',
+        'TIMEOUT': 300,
+        'VERSION': 1,
     },
     
-    # Optional: Separate cache for sessions
     'sessions': {
-        'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+        'BACKEND': 'django_redis.cache.RedisCache', 
         'LOCATION': REDIS_CACHE_URL,
         'OPTIONS': {
             'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+            'CONNECTION_POOL_CLASS': 'redis.BlockingConnectionPool',
+            'CONNECTION_POOL_CLASS_KWARGS': {
+                'max_connections': 50,
+                'timeout': 20,
+            },
         },
         'KEY_PREFIX': 'rag_sessions',
-        'TIMEOUT': 86400,  # 24 hours
+        'TIMEOUT': 86400,
     },
 }
 
-# Optional: Use Redis for session storage
+# Tell Django to use Redis for sessions
 SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
 SESSION_CACHE_ALIAS = 'sessions'
+
+# Security settings for your RAG system
+SESSION_COOKIE_SECURE = True
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = 'Lax'
+CSRF_COOKIE_SECURE = True
 
 # Celery Configuration
 CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', REDIS_URL)
